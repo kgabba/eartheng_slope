@@ -1,88 +1,47 @@
 import ee
+from google.colab import auth
+
+auth.authenticate_user()
+ee.Initialize(project="evident-syntax-480714-p0")
+
 import geemap
-import folium
-from typing import List, Tuple
 
-# АВТОАВТОРИЗАЦИЯ ПРИ ПЕРВОМ ЗАПУСКЕ
-# Запусти один раз: ee.Authenticate()
-# КЛЮЧ НЕ НУЖЕН - авторизация через браузер
+# ТВОИ НОВЫЕ КООРДИНАТЫ (маленький участок) - ОБНОВЛЕНЫ НА (longitude, latitude)
+TEST_COORDS = [
+    (58.60994, 52.24872),  # левый верхний (lon, lat)
+    (58.68310, 52.24872),  # правый верхний (lon, lat)
+    (58.68310, 52.20368),  # правый нижний (lon, lat)
+    (58.60994, 52.20368),  # левый нижний (lon, lat)
+]
 
-def calculate_alos_slope(
-    coords: List[Tuple[float, float]],  # [(lon1,lat1), (lon2,lat2), (lon3,lat3), (lon4,lat4)]
-    scale: int = 30
-) -> folium.Map:
-    """
-    coords: 4 точки полигона по часовой от левого верхнего
-    Возвращает: Folium карта с уклоном ALOS 30m
-    """
-    
-    # Создаем полигон из 4 точек
+
+# Функция с ФИКСОМ ОТОБРАЖЕНИЯ
+def calculate_alos_slope(coords):
     polygon = ee.Geometry.Polygon([coords])
-    
-    # ALOS World 3D 30m (DSM v4.1) - улучшенная точность
-    dem = ee.Image('JAXA/ALOS/AW3D30/V4_1').select('DSM')
-    
-    # Вычисляем уклон (градусы, 0-90)
-    slope = ee.Terrain.slope(dem).clip(polygon)
-    
-    # Статистика уклона
-    stats = slope.reduceRegion(
-        reducer=ee.Reducer.minMax().combine(ee.Reducer.mean().combine(ee.Reducer.stdDev())),
-        geometry=polygon,
-        scale=scale,
-        maxPixels=1e6
-    )
-    
-    print("Статистика уклона (градусы):")
-    print(stats.getInfo())
-    
-    # Создаем карту Folium
-    m = geemap.Map(center=[sum(lat for _,lat in coords)/4, sum(lon for lon,_ in coords)/4], zoom=12)
-    
-    # Визуализация уклона: синий=плоский (0°), красный=крутой (45°+)
-    vis_params = {
-        'min': 0,
-        'max': 45,
-        'palette': ['blue', 'cyan', 'yellow', 'orange', 'red']
-    }
-    
-    # Добавляем слои
-    m.add_layer(polygon, {'color': 'red'}, 'Твой полигон')
-    map_layer = geemap.ee_tile_layer(slope, vis_params, 'Уклон ALOS 30m')
-    m.add_layer(map_layer)
-    
-    # Легенда
-    legend_html = '''
-    <div style="position: fixed; 
-                bottom: 50px; left: 50px; width: 200px; height: 120px; 
-                background-color: white; border:2px solid grey; z-index:9999; 
-                font-size:14px; padding: 10px">
-    <b>Уклон (°)</b><br>
-    <i style="background:linear-gradient(to right, #0000FF 0%, #00FFFF 25%, #FFFF00 50%, #FF8C00 75%, #FF0000 100%); width:100%; height:20px; display:block;"></i>
-    <small>0°(плоский) → 45°(крутой)</small>
-    </div>
-    '''
-    m.get_root().html.add_child(folium.Element(legend_html))
-    
-    return m
 
-# ТЕСТОВЫЙ ЗАПУСК
-if __name__ == "__main__":
-    # Твои 4 координаты: левый верхний → по часовой → левый нижний
-    TEST_COORDS = [ (52.23563, 58.65520),  # левый верхний
-  (52.23563, 58.65667),  # правый верхний
-  (52.23473, 58.65667),  # правый нижний
-  (52.23473, 58.65520) ] # левый нижний
-    
-    # Инициализация Earth Engine (один раз)
-    try:
-        ee.Initialize()
-    except Exception:
-        ee.Authenticate()
-        ee.Initialize()
-    
-    # Запуск
-    mapa = calculate_alos_slope(TEST_COORDS)
-    mapa.save('alos_slope_map.html')
-    mapa  # откроется в Jupyter или браузере
-    print("Карта сохранена: alos_slope_map.html")
+    # ИСПОЛЬЗУЕМ NASADEM, ТАК КАК ALOS НЕ ИМЕЕТ ДАННЫХ ДЛЯ ЭТОГО РЕГИОНА
+    nasadem = ee.Image("NASA/NASADEM_HGT/001").select("elevation")
+    slope = ee.Terrain.slope(nasadem).clip(polygon)
+
+    # СТАТИСТИКА
+    stats = slope.reduceRegion(
+        reducer=ee.Reducer.minMax().combine(ee.Reducer.mean(), "", True),
+        geometry=polygon,
+        scale=30,
+        maxPixels=1e6,  # увеличено maxPixels
+    )
+    print("=== СТАТИСТИКА УКЛОНА (NASADEM) ===")
+    print(stats.getInfo())
+
+    # КАРТА С ЗУМОМ НА ПОЛИГОН
+    m = geemap.Map()
+    m.centerObject(polygon, 18)  # ✅ ЗУМ НА ТВОЙ УЧАСТОК
+    m.addLayer(polygon, {"color": "red", "weight": 3}, "📍 Полигон")
+
+    vis = {"min": 0, "max": 30, "palette": ["blue", "cyan", "lime", "yellow", "orange", "red"]}
+    m.addLayer(slope, vis, "🎨 Уклон NASADEM 30м")
+
+    # ✅ FIT BOUNDS
+    m.fit_bounds(polygon.coordinates().getInfo()[0])
+
+    return m
